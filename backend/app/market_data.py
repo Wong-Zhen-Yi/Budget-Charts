@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import timezone
 from typing import Any
@@ -20,6 +21,24 @@ WATCHLIST = [
     {"symbol": "MSTR", "name": "Strategy Inc."},
     {"symbol": "SOFI", "name": "SoFi Technologies, Inc."},
 ]
+
+# Timeframe presets matching the PyQT app's Charts page
+CHART_TIMEFRAME_PRESETS = {
+    "1 Minute": {"period": "7d", "interval": "1m"},
+    "5 Minutes": {"period": "60d", "interval": "5m"},
+    "15 Minutes": {"period": "60d", "interval": "15m"},
+    "1 Hour": {"period": "730d", "interval": "1h"},
+    "1 Day": {"period": "5y", "interval": "1d"},
+    "1 Week": {"period": "5y", "interval": "1wk"},
+    "1 Month": {"period": "5y", "interval": "1mo"},
+}
+
+# Timeframe presets matching the PyQT app's Multi Charts page
+MC_TIMEFRAME_PRESETS = {
+    "1D": {"period": "1y", "interval": "1d"},
+    "1W": {"period": "5y", "interval": "1wk"},
+    "1M": {"period": "5y", "interval": "1mo"},
+}
 
 RANGE_PRESETS = {
     "1D": {"period": "1d", "interval": "5m"},
@@ -256,3 +275,130 @@ def search_symbols(query: str) -> list[dict]:
             seen.add(item["symbol"])
 
     return normalized[:8]
+
+
+# ---------------------------------------------------------------------------
+# Multi-symbol comparison helpers
+# ---------------------------------------------------------------------------
+
+def _fetch_single_chart(symbol: str, period: str, interval: str) -> dict:
+    """Fetch and normalize chart data for a single symbol (for compare/multi)."""
+    clean_symbol = symbol.strip().upper()
+    ticker = yf.Ticker(clean_symbol)
+
+    try:
+        history = ticker.history(
+            period=period,
+            interval=interval,
+            auto_adjust=False,
+            actions=False,
+            raise_errors=False,
+        )
+    except Exception as exc:
+        raise MarketDataError(
+            f"Could not fetch {clean_symbol} from Yahoo Finance: {exc}", 502
+        ) from exc
+
+    frame = normalize_history(history)
+
+    # For comparison we normalize to percentage change from first candle
+    first_close = float(frame.iloc[0]["close"])
+    if first_close == 0:
+        first_close = 1.0
+
+    pct_series = ((frame["close"].astype(float) - first_close) / first_close) * 100
+
+    try:
+        info = ticker.get_info()
+    except Exception:
+        info = {}
+
+    return {
+        "symbol": clean_symbol,
+        "name": info.get("shortName") or info.get("longName") or clean_symbol,
+        "currency": info.get("currency") or "USD",
+        "exchange": info.get("exchange") or info.get("fullExchangeName") or "",
+        "lastClose": round(float(frame.iloc[-1]["close"]), 4),
+        "changePct": round(
+            ((float(frame.iloc[-1]["close"]) - float(frame.iloc[-2]["close"]))
+             / float(frame.iloc[-2]["close"]) * 100)
+            if len(frame) > 1 and float(frame.iloc[-2]["close"]) != 0
+            else 0.0,
+            4,
+        ),
+        "candles": frame_to_candles(frame),
+        "percentSeries": [
+            {"time": int(t), "value": round(float(v), 4)}
+            for t, v in zip(frame["time"], pct_series)
+            if pd.notna(v)
+        ],
+    }
+
+
+def get_compare_payload(symbols: list[str], range_label: str) -> dict:
+    """Fetch normalized comparison data for multiple symbols."""
+    preset = resolve_range(range_label)
+
+    results: list[dict] = []
+    errors: list[dict] = []
+
+    def _fetch(sym: str) -> dict:
+        return _fetch_single_chart(sym, preset.period, preset.interval)
+
+    with ThreadPoolExecutor(max_workers=min(len(symbols), 6)) as pool:
+        futures = {pool.submit(_fetch, sym): sym for sym in symbols}
+        for future in as_completed(futures):
+            sym = futures[future]
+            try:
+                results.append(future.result())
+            except MarketDataError as exc:
+                errors.append({"symbol": sym, "error": exc.message})
+            except Exception as exc:
+                errors.append({"symbol": sym, "error": str(exc)})
+
+    results.sort(key=lambda r: symbols.index(r["symbol"]) if r["symbol"] in symbols else 999)
+
+    return {
+        "range": preset.label,
+        "interval": preset.interval,
+        "symbols": results,
+        "errors": errors,
+    }
+
+
+def get_multi_chart_payload(
+    symbols: list[str],
+    timeframe_label: str = "1D",
+    chart_style: str = "Candlestick",
+) -> dict:
+    """Fetch chart data for a grid of multiple symbols (Multi Charts page)."""
+    if timeframe_label not in MC_TIMEFRAME_PRESETS:
+        timeframe_label = "1D"
+    mc_preset = MC_TIMEFRAME_PRESETS[timeframe_label]
+
+    results: list[dict] = []
+    errors: list[dict] = []
+
+    def _fetch(sym: str) -> dict:
+        return _fetch_single_chart(sym, mc_preset["period"], mc_preset["interval"])
+
+    with ThreadPoolExecutor(max_workers=min(len(symbols), 8)) as pool:
+        futures = {pool.submit(_fetch, sym): sym for sym in symbols}
+        for future in as_completed(futures):
+            sym = futures[future]
+            try:
+                results.append(future.result())
+            except MarketDataError as exc:
+                errors.append({"symbol": sym, "error": exc.message})
+            except Exception as exc:
+                errors.append({"symbol": sym, "error": str(exc)})
+
+    results.sort(key=lambda r: symbols.index(r["symbol"]) if r["symbol"] in symbols else 999)
+
+    return {
+        "timeframe": timeframe_label,
+        "interval": mc_preset["interval"],
+        "chartStyle": chart_style,
+        "charts": results,
+        "errors": errors,
+    }

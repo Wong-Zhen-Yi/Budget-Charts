@@ -25,7 +25,12 @@ npm install
 
 ## Start The App
 
-You need two PowerShell windows.
+Double-click `run_app.bat` in this folder. It starts the backend and frontend in
+separate windows, waits for the app to be ready, and opens it in your browser.
+
+### Manual Start
+
+If you need to troubleshoot startup, use two PowerShell windows.
 
 In the first window, start the data server:
 
@@ -48,4 +53,3 @@ http://127.0.0.1:5173
 ## Stop The App
 
 Close both PowerShell windows, or press `Ctrl+C` in each window.
-

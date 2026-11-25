@@ -61,6 +61,55 @@ export type SearchResult = {
   type: string
 }
 
+// ---------------------------------------------------------------------------
+// Compare types
+// ---------------------------------------------------------------------------
+
+export type CompareSymbolData = {
+  symbol: string
+  name: string
+  currency: string
+  exchange: string
+  lastClose: number
+  changePct: number
+  candles: Candle[]
+  percentSeries: SeriesPoint[]
+}
+
+export type ComparePayload = {
+  range: string
+  interval: string
+  symbols: CompareSymbolData[]
+  errors: { symbol: string; error: string }[]
+}
+
+// ---------------------------------------------------------------------------
+// Multi Chart types
+// ---------------------------------------------------------------------------
+
+export type MultiChartSymbolData = {
+  symbol: string
+  name: string
+  currency: string
+  exchange: string
+  lastClose: number
+  changePct: number
+  candles: Candle[]
+  percentSeries: SeriesPoint[]
+}
+
+export type MultiChartPayload = {
+  timeframe: string
+  interval: string
+  chartStyle: string
+  charts: MultiChartSymbolData[]
+  errors: { symbol: string; error: string }[]
+}
+
+// ---------------------------------------------------------------------------
+// API client
+// ---------------------------------------------------------------------------
+
 async function requestJson<T>(path: string, signal?: AbortSignal): Promise<T> {
   const response = await fetch(path, { signal })
   const body = await response.json().catch(() => null)
@@ -95,4 +144,30 @@ export async function searchSymbols(query: string, signal?: AbortSignal): Promis
     signal,
   )
   return response.results
+}
+
+export function fetchCompare(
+  symbols: string[],
+  range: RangeLabel,
+  signal?: AbortSignal,
+): Promise<ComparePayload> {
+  const params = new URLSearchParams({
+    symbols: symbols.join(','),
+    range,
+  })
+  return requestJson<ComparePayload>(`/api/compare?${params.toString()}`, signal)
+}
+
+export function fetchMultiCharts(
+  symbols: string[],
+  timeframe: string,
+  style: string,
+  signal?: AbortSignal,
+): Promise<MultiChartPayload> {
+  const params = new URLSearchParams({
+    symbols: symbols.join(','),
+    timeframe,
+    style,
+  })
+  return requestJson<MultiChartPayload>(`/api/multi?${params.toString()}`, signal)
 }
